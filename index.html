@@ -546,100 +546,201 @@
         }
     }
 
-    // ========== ГЕОЛОКАЦИЯ С АВТОВОССТАНОВЛЕНИЕМ ==========
-    let geoWatchId = null;
-    let lastGeoPosition = null;
-    let isGeoActive = false;
+    // ========== ГЕОЛОКАЦИЯ С СОХРАНЕНИЕМ ПОСЛЕДНЕЙ ПОЗИЦИИ ==========
+let geoWatchId = null;
+let lastGeoPosition = null;
+let isGeoActive = false;
+let geoPermissionDenied = false;
+
+// Сохраняем последнюю позицию в localStorage
+function saveLastPosition(lat, lng) {
+    localStorage.setItem('lastSavedLat', lat);
+    localStorage.setItem('lastSavedLng', lng);
+    localStorage.setItem('lastSavedTime', Date.now());
+}
+
+// Загружаем сохранённую позицию
+function loadLastPosition() {
+    const lat = localStorage.getItem('lastSavedLat');
+    const lng = localStorage.getItem('lastSavedLng');
+    const savedTime = localStorage.getItem('lastSavedTime');
     
-    function stopGeoWatch() {
-        if (geoWatchId !== null) {
-            navigator.geolocation.clearWatch(geoWatchId);
-            geoWatchId = null;
+    if (lat && lng && savedTime) {
+        // Если позиция сохранена меньше часа назад
+        if (Date.now() - parseInt(savedTime) < 3600000) {
+            return { lat: parseFloat(lat), lng: parseFloat(lng) };
         }
-        isGeoActive = false;
     }
+    return null;
+}
+
+// Восстановление позиции из сохранённой (без запроса геолокации)
+function restoreLastPosition() {
+    const savedPos = loadLastPosition();
+    if (savedPos && typeof updateUserPosition === 'function') {
+        updateUserPosition(savedPos.lat, savedPos.lng);
+        showNotification('📍 Позиция восстановлена из сохранённой', false);
+        return true;
+    }
+    return false;
+}
+
+function stopGeoWatch() {
+    if (geoWatchId !== null) {
+        navigator.geolocation.clearWatch(geoWatchId);
+        geoWatchId = null;
+    }
+    isGeoActive = false;
+}
+
+function startGeoWatch() {
+    if (!navigator.geolocation || geoPermissionDenied) return;
     
-    function startGeoWatch() {
-        if (!navigator.geolocation) return;
-        
-        stopGeoWatch();
-        
-        geoWatchId = navigator.geolocation.watchPosition(
-            function(position) {
-                lastGeoPosition = position;
-                isGeoActive = true;
-                if (typeof updateUserPosition === 'function') {
-                    updateUserPosition(position.coords.latitude, position.coords.longitude);
-                }
-            },
-            function(error) {
-                console.log("Geo watch error:", error.code, error.message);
-                if (error.code === 1) {
-                    showNotification('⚠️ Нужен доступ к геолокации для игры!', true);
-                    isGeoActive = false;
-                }
-            },
-            {
-                enableHighAccuracy: true,
-                maximumAge: 5000,
-                timeout: 10000
+    stopGeoWatch();
+    
+    geoWatchId = navigator.geolocation.watchPosition(
+        function(position) {
+            lastGeoPosition = position;
+            isGeoActive = true;
+            // Сохраняем позицию
+            saveLastPosition(position.coords.latitude, position.coords.longitude);
+            if (typeof updateUserPosition === 'function') {
+                updateUserPosition(position.coords.latitude, position.coords.longitude);
             }
-        );
+        },
+        function(error) {
+            console.log("Geo watch error:", error.code);
+            if (error.code === 1) { // PERMISSION_DENIED
+                geoPermissionDenied = true;
+                isGeoActive = false;
+            }
+        },
+        {
+            enableHighAccuracy: true,
+            maximumAge: 5000,
+            timeout: 10000
+        }
+    );
+}
+
+// Запрос геолокации (только ОДИН раз)
+let hasRequestedGeo = false;
+
+function requestGeolocationOnce() {
+    if (!navigator.geolocation) {
+        showNotification('❌ Геолокация не поддерживается', true);
+        return;
     }
     
-    function requestGeolocationOnce() {
-        if (!navigator.geolocation) {
-            showNotification('❌ Геолокация не поддерживается', true);
-            return;
-        }
-        
-        showNotification('📍 Запрос геолокации...', false);
-        
-        navigator.geolocation.getCurrentPosition(
-            function(position) {
-                lastGeoPosition = position;
-                isGeoActive = true;
-                if (typeof updateUserPosition === 'function') {
-                    updateUserPosition(position.coords.latitude, position.coords.longitude);
-                }
-                startGeoWatch();
-                showNotification('✅ Геолокация активирована!', false);
-            },
-            function(error) {
-                if (error.code === 1) {
-                    showNotification('❌ Разрешите доступ к геолокации!', true);
-                } else if (error.code === 2 || error.code === 3) {
-                    setTimeout(requestGeolocationOnce, 1000);
-                }
-            },
-            { enableHighAccuracy: true, timeout: 10000 }
-        );
+    // Если уже разрешено, просто запускаем слежение
+    if (geoPermissionDenied === false && isGeoActive === false && hasRequestedGeo) {
+        startGeoWatch();
+        return;
     }
     
-    // Восстановление геолокации при возврате в приложение
-    function restoreGeolocationOnResume() {
-        if (!isGeoActive || !lastGeoPosition) {
-            console.log("Restoring geolocation...");
-            requestGeolocationOnce();
-        }
+    hasRequestedGeo = true;
+    
+    showNotification('📍 Запрос геолокации...', false);
+    
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            lastGeoPosition = position;
+            isGeoActive = true;
+            geoPermissionDenied = false;
+            saveLastPosition(position.coords.latitude, position.coords.longitude);
+            if (typeof updateUserPosition === 'function') {
+                updateUserPosition(position.coords.latitude, position.coords.longitude);
+            }
+            startGeoWatch();
+            showNotification('✅ Геолокация активирована!', false);
+            localStorage.setItem('geoPermissionGranted', 'true');
+        },
+        function(error) {
+            console.log("Geo error:", error.code);
+            if (error.code === 1) { // PERMISSION_DENIED
+                geoPermissionDenied = true;
+                showNotification('❌ Нужен доступ к геолокации для игры!', true);
+            } else if (error.code === 2 || error.code === 3) {
+                // Таймаут или недоступно — используем сохранённую позицию
+                restoreLastPosition();
+                setTimeout(requestGeolocationOnce, 2000);
+            }
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+}
+
+// Принудительное обновление позиции (по кнопке)
+function forceRefreshLocation() {
+    if (geoPermissionDenied) {
+        showNotification('⚠️ Сначала разрешите доступ к геолокации', true);
+        // Пытаемся запросить снова
+        geoPermissionDenied = false;
+        requestGeolocationOnce();
+        return;
     }
     
-    // Слушаем события возврата в приложение
-    document.addEventListener('visibilitychange', function() {
-        if (!document.hidden) {
-            console.log("App resumed, restoring geolocation...");
-            setTimeout(restoreGeolocationOnResume, 500);
-            // Также обновляем Wake Lock
-            if (wakeLock === null) requestWakeLock();
+    showNotification('🔄 Обновление позиции...', false);
+    
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            saveLastPosition(position.coords.latitude, position.coords.longitude);
+            if (typeof updateUserPosition === 'function') {
+                updateUserPosition(position.coords.latitude, position.coords.longitude);
+            }
+            showNotification('✅ Позиция обновлена!', false);
+        },
+        function(error) {
+            if (error.code === 1) {
+                geoPermissionDenied = true;
+                showNotification('❌ Нет доступа к геолокации', true);
+            } else {
+                // Используем сохранённую позицию
+                restoreLastPosition();
+            }
+        },
+        { enableHighAccuracy: true, timeout: 5000 }
+    );
+}
+
+// Восстановление при возврате в приложение (НЕ запрашивает повторно!)
+function restoreOnResume() {
+    console.log("App resumed, restoring from saved position...");
+    
+    // Если позиция активна — используем её
+    if (isGeoActive && lastGeoPosition) {
+        if (typeof updateUserPosition === 'function') {
+            updateUserPosition(lastGeoPosition.coords.latitude, lastGeoPosition.coords.longitude);
         }
+        showNotification('📍 Позиция восстановлена', false);
+        return;
+    }
+    
+    // Если нет активной позиции, но есть сохранённая
+    if (restoreLastPosition()) {
+        return;
+    }
+    
+    // Если ничего нет, показываем кнопку
+    showNotification('📍 Нажмите "Я ЗДЕСЬ" для определения позиции', false);
+}
+
+// Слушаем возврат в приложение
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+        console.log("Page visible, restoring...");
+        setTimeout(restoreOnResume, 300);
+        // Восстанавливаем Wake Lock
+        if (wakeLock === null) requestWakeLock();
+    }
+});
+
+// Для Telegram
+if (window.Telegram && window.Telegram.WebApp) {
+    window.Telegram.WebApp.onEvent('viewportChanged', function() {
+        setTimeout(restoreOnResume, 300);
     });
-    
-    // Для Telegram: слушаем событие возврата
-    if (window.Telegram && window.Telegram.WebApp) {
-        window.Telegram.WebApp.onEvent('viewportChanged', function() {
-            setTimeout(restoreGeolocationOnResume, 500);
-        });
-    }
+}
 
     // ========== WAKE LOCK ==========
     let wakeLock = null;
