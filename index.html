@@ -8,7 +8,6 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/leaflet-rotate@0.1.4/dist/leaflet-rotate.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -529,7 +528,7 @@
 </div>
 
 <script>
-    // ========== TELEGRAM MINI APP INTEGRATION ==========
+    // ========== TELEGRAM MINI APP ==========
     let telegramUser = null;
     let isTelegramWebApp = false;
     
@@ -542,21 +541,22 @@
         if (telegramUser) {
             console.log("Telegram user:", telegramUser.first_name);
         }
-        // Применяем тему Telegram
         if (tg.themeParams.bg_color) {
             document.body.style.backgroundColor = tg.themeParams.bg_color;
         }
     }
 
-    // ========== УЛУЧШЕННАЯ ГЕОЛОКАЦИЯ (НЕ ПРОСИТ ПРИ КАЖДОМ ДВИЖЕНИИ) ==========
+    // ========== ГЕОЛОКАЦИЯ С АВТОВОССТАНОВЛЕНИЕМ ==========
     let geoWatchId = null;
     let lastGeoPosition = null;
+    let isGeoActive = false;
     
     function stopGeoWatch() {
         if (geoWatchId !== null) {
             navigator.geolocation.clearWatch(geoWatchId);
             geoWatchId = null;
         }
+        isGeoActive = false;
     }
     
     function startGeoWatch() {
@@ -567,15 +567,16 @@
         geoWatchId = navigator.geolocation.watchPosition(
             function(position) {
                 lastGeoPosition = position;
+                isGeoActive = true;
                 if (typeof updateUserPosition === 'function') {
                     updateUserPosition(position.coords.latitude, position.coords.longitude);
                 }
             },
             function(error) {
-                console.log("Geo error:", error.code, error.message);
-                if (error.code === 1) { // PERMISSION_DENIED
-                    showNotification('⚠️ Разрешите доступ к геолокации для охоты!', true);
-                    stopGeoWatch();
+                console.log("Geo watch error:", error.code, error.message);
+                if (error.code === 1) {
+                    showNotification('⚠️ Нужен доступ к геолокации для игры!', true);
+                    isGeoActive = false;
                 }
             },
             {
@@ -592,18 +593,21 @@
             return;
         }
         
+        showNotification('📍 Запрос геолокации...', false);
+        
         navigator.geolocation.getCurrentPosition(
             function(position) {
                 lastGeoPosition = position;
+                isGeoActive = true;
                 if (typeof updateUserPosition === 'function') {
                     updateUserPosition(position.coords.latitude, position.coords.longitude);
                 }
-                startGeoWatch(); // После разрешения запускаем постоянное отслеживание
+                startGeoWatch();
                 showNotification('✅ Геолокация активирована!', false);
             },
             function(error) {
                 if (error.code === 1) {
-                    showNotification('❌ Нужен доступ к геолокации для игры!', true);
+                    showNotification('❌ Разрешите доступ к геолокации!', true);
                 } else if (error.code === 2 || error.code === 3) {
                     setTimeout(requestGeolocationOnce, 1000);
                 }
@@ -612,20 +616,41 @@
         );
     }
     
+    // Восстановление геолокации при возврате в приложение
+    function restoreGeolocationOnResume() {
+        if (!isGeoActive || !lastGeoPosition) {
+            console.log("Restoring geolocation...");
+            requestGeolocationOnce();
+        }
+    }
+    
+    // Слушаем события возврата в приложение
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) {
+            console.log("App resumed, restoring geolocation...");
+            setTimeout(restoreGeolocationOnResume, 500);
+            // Также обновляем Wake Lock
+            if (wakeLock === null) requestWakeLock();
+        }
+    });
+    
+    // Для Telegram: слушаем событие возврата
+    if (window.Telegram && window.Telegram.WebApp) {
+        window.Telegram.WebApp.onEvent('viewportChanged', function() {
+            setTimeout(restoreGeolocationOnResume, 500);
+        });
+    }
+
     // ========== WAKE LOCK ==========
     let wakeLock = null;
     let wakeLockIndicator = document.getElementById('wakeLockIndicator');
     async function requestWakeLock() {
         if ('wakeLock' in navigator) {
             try {
+                if (wakeLock) await wakeLock.release();
                 wakeLock = await navigator.wakeLock.request('screen');
                 wakeLockIndicator.innerHTML = '<i class="fas fa-sun"></i> <span>Экран активен</span>';
                 wakeLockIndicator.style.color = '#2ecc71';
-                document.addEventListener('visibilitychange', async () => {
-                    if (wakeLock !== null && document.visibilityState === 'visible') {
-                        wakeLock = await navigator.wakeLock.request('screen');
-                    }
-                });
             } catch (err) {
                 wakeLockIndicator.innerHTML = '<i class="fas fa-moon"></i> <span>Экран может гаснуть</span>';
                 wakeLockIndicator.style.color = '#f39c12';
@@ -636,7 +661,6 @@
         }
     }
     requestWakeLock();
-    document.addEventListener('touchstart', () => { if (wakeLock === null) requestWakeLock(); });
 
     const MONSTER_TYPES = [
         { name: "ПРИЗРАК", emoji: "👻", color: "#a855f7", catchTime: 3000, rarity: "common", reward: 10 },
